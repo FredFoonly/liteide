@@ -10,5 +10,5 @@ echo deploy liteide
 echo LITEIDE_DEPLOYMENT_ROOT=$LITEIDE_DEPLOYMENT_ROOT 
 echo .
 
-echo Copying liteide to /usr/local
-cp -rf $LITEIDE_DEPLOYMENT_ROOT/local /usr/local
+echo Copying from $LITEIDE_DEPLOYMENT_ROOT/local/* to /usr/local
+cp -rf $LITEIDE_DEPLOYMENT_ROOT/local/* /usr/local
