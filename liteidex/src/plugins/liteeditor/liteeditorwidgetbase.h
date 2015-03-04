@@ -110,12 +110,27 @@ public slots:
     void gotoLineStartWithSelection();
     void gotoLineEnd();
     void gotoLineEndWithSelection();
+
     void duplicate();
+
     void cutLine();
     void copyLine();
-    void deleteLine();    
+    void deleteLine();
+
+    void deleteEndOfWord();
+    void deleteStartOfWord();
+
+    void moveLineUp();
+    void moveLineDown();
+
+    void copyLineUp();
+    void copyLineDown();
+
+    void joinLines();
+
     void insertLineBefore();
     void insertLineAfter();
+
     void gotoPrevBlock();
     void gotoNextBlock();
     void selectBlock();
@@ -230,6 +245,7 @@ protected:
     void mousePressEvent(QMouseEvent *e);
     void mouseReleaseEvent(QMouseEvent *e);
     void mouseMoveEvent(QMouseEvent *e);
+    bool viewportEvent(QEvent *);
     void inputMethodEvent(QInputMethodEvent *e);
     void indentBlock(QTextBlock block, bool bIndent);
     void indentCursor(QTextCursor cur, bool bIndent);
@@ -237,6 +253,8 @@ protected:
     void indentEnter(QTextCursor cur);
     QString tabText(int n = 1) const;
     QTextBlock foldedBlockAt(const QPoint &pos, QRect *box = 0) const;
+    void moveLineUpDown(bool up);
+    void copyLineUpDown(bool up);
 protected slots:
     void uplinkDeployTimeout();
     void uplinkInfoTimeout();
@@ -258,6 +276,7 @@ protected:
     QRegExp m_findExpression;
     QTextDocument::FindFlags m_findFlags;
     LiteApi::Link       m_currentLink;
+    bool m_moveLineUndoHack;
     bool m_defaultWordWrap;
     bool m_wordWrapOverridden;
     bool m_wordWrap;
@@ -288,11 +307,11 @@ protected:
     int m_extraAreaSelectionNumber;
     int m_averageCharWidth;
     int m_lastLine;
-    int m_uplinkTime;
-    QTimer *m_uplinkDeployTimer;
-    QTimer *m_uplinkInfoTimer;
-    QPoint m_uplinkInfoPos;
-    QPoint m_lastUplinkInfoPos;
+    int m_upToolTipTime;
+    QTimer *m_upToolTipDeployTimer;
+    QTimer *m_upToolTipTimer;
+    QPoint m_upToolTipPos;
+    QPoint m_lastUpToolTipPos;
     bool m_linkPressed;
     bool m_uplinkSkip;
     bool m_mouseOnFoldedMarker;

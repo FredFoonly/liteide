@@ -24,6 +24,7 @@
 #include "liteeditorwidgetbase.h"
 #include "qtc_texteditor/basetextdocumentlayout.h"
 #include <QCoreApplication>
+#include <QApplication>
 #include <QTextBlock>
 #include <QPainter>
 #include <QStyle>
@@ -340,8 +341,9 @@ LiteEditorWidgetBase::LiteEditorWidgetBase(LiteApi::IApplication *app, QWidget *
       m_lastCursorChangeWasInteresting(false)
 {
     m_inputCursorOffset = 0;
-    m_uplinkTime = 200;
+    m_upToolTipTime = 200;
     m_linkPressed = false;
+    m_moveLineUndoHack = false;
     setLineWrapMode(QPlainTextEdit::NoWrap);
     m_extraArea = new TextEditExtraArea(this);
     m_navigateArea = new TextEditNavigateArea(this);
@@ -380,12 +382,12 @@ LiteEditorWidgetBase::LiteEditorWidgetBase(LiteApi::IApplication *app, QWidget *
     m_visualizeWhitespace = false;
     m_lastLine = -1;
 
-    m_uplinkDeployTimer = new QTimer(this);
-    m_uplinkDeployTimer->setSingleShot(true);
-    connect(m_uplinkDeployTimer,SIGNAL(timeout()),this,SLOT(uplinkDeployTimeout()));
-    m_uplinkInfoTimer = new QTimer(this);
-    m_uplinkInfoTimer->setSingleShot(true);
-    connect(m_uplinkInfoTimer,SIGNAL(timeout()),this,SLOT(uplinkInfoTimeout()));
+    m_upToolTipDeployTimer = new QTimer(this);
+    m_upToolTipDeployTimer->setSingleShot(true);
+    connect(m_upToolTipDeployTimer,SIGNAL(timeout()),this,SLOT(uplinkDeployTimeout()));
+    m_upToolTipTimer = new QTimer(this);
+    m_upToolTipTimer->setSingleShot(true);
+    connect(m_upToolTipTimer,SIGNAL(timeout()),this,SLOT(uplinkInfoTimeout()));
 
     m_selectionExpression.setCaseSensitivity(Qt::CaseSensitive);
     m_selectionExpression.setPatternSyntax(QRegExp::FixedString);
@@ -1528,6 +1530,186 @@ void LiteEditorWidgetBase::deleteLine()
     textCursor().removeSelectedText();
 }
 
+void LiteEditorWidgetBase::deleteEndOfWord()
+{
+    moveCursor(QTextCursor::EndOfWord, QTextCursor::KeepAnchor);
+    textCursor().removeSelectedText();
+    setTextCursor(textCursor());
+}
+
+void LiteEditorWidgetBase::moveLineUpDown(bool up)
+{
+    QTextCursor cursor = textCursor();
+    QTextCursor move = cursor;
+
+    move.setVisualNavigation(false); // this opens folded items instead of destroying them
+
+    if (m_moveLineUndoHack)
+        move.joinPreviousEditBlock();
+    else
+        move.beginEditBlock();
+
+    bool hasSelection = cursor.hasSelection();
+
+    if (hasSelection) {
+        move.setPosition(cursor.selectionStart());
+        move.movePosition(QTextCursor::StartOfBlock);
+        move.setPosition(cursor.selectionEnd(), QTextCursor::KeepAnchor);
+        move.movePosition(move.atBlockStart() ? QTextCursor::Left: QTextCursor::EndOfBlock,
+                          QTextCursor::KeepAnchor);
+    } else {
+        move.movePosition(QTextCursor::StartOfBlock);
+        move.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+    }
+    QString text = move.selectedText();
+
+    move.movePosition(QTextCursor::Right, QTextCursor::KeepAnchor);
+    move.removeSelectedText();
+
+    if (up) {
+        move.movePosition(QTextCursor::PreviousBlock);
+        move.insertBlock();
+        move.movePosition(QTextCursor::Left);
+    } else {
+        move.movePosition(QTextCursor::EndOfBlock);
+        if (move.atBlockStart()) { // empty block
+            move.movePosition(QTextCursor::NextBlock);
+            move.insertBlock();
+            move.movePosition(QTextCursor::Left);
+        } else {
+            move.insertBlock();
+        }
+    }
+
+    int start = move.position();
+    move.clearSelection();
+    move.insertText(text);
+    int end = move.position();
+
+    if (hasSelection) {
+        move.setPosition(end);
+        move.setPosition(start, QTextCursor::KeepAnchor);
+    } else {
+        move.setPosition(start);
+    }
+
+    move.endEditBlock();
+
+    setTextCursor(move);
+    m_moveLineUndoHack = true;
+}
+
+void LiteEditorWidgetBase::copyLineUpDown(bool up)
+{
+    QTextCursor cursor = textCursor();
+    QTextCursor move = cursor;
+    move.beginEditBlock();
+
+    bool hasSelection = cursor.hasSelection();
+
+    if (hasSelection) {
+        move.setPosition(cursor.selectionStart());
+        move.movePosition(QTextCursor::StartOfBlock);
+        move.setPosition(cursor.selectionEnd(), QTextCursor::KeepAnchor);
+        move.movePosition(move.atBlockStart() ? QTextCursor::Left: QTextCursor::EndOfBlock,
+                          QTextCursor::KeepAnchor);
+    } else {
+        move.movePosition(QTextCursor::StartOfBlock);
+        move.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+    }
+
+    QString text = move.selectedText();
+
+    if (up) {
+        move.setPosition(cursor.selectionStart());
+        move.movePosition(QTextCursor::StartOfBlock);
+        move.insertBlock();
+        move.movePosition(QTextCursor::Left);
+    } else {
+        move.movePosition(QTextCursor::EndOfBlock);
+        if (move.atBlockStart()) {
+            move.movePosition(QTextCursor::NextBlock);
+            move.insertBlock();
+            move.movePosition(QTextCursor::Left);
+        } else {
+            move.insertBlock();
+        }
+    }
+
+    int start = move.position();
+    move.clearSelection();
+    move.insertText(text);
+    int end = move.position();
+
+    move.setPosition(start);
+    move.setPosition(end, QTextCursor::KeepAnchor);
+
+    move.endEditBlock();
+
+    setTextCursor(move);
+}
+
+void LiteEditorWidgetBase::joinLines()
+{
+    QTextCursor cursor = textCursor();
+    QTextCursor start = cursor;
+    QTextCursor end = cursor;
+
+    start.setPosition(cursor.selectionStart());
+    end.setPosition(cursor.selectionEnd() - 1);
+
+    int lineCount = qMax(1, end.blockNumber() - start.blockNumber());
+
+    cursor.beginEditBlock();
+    cursor.setPosition(cursor.selectionStart());
+    while (lineCount--) {
+        cursor.movePosition(QTextCursor::NextBlock);
+        cursor.movePosition(QTextCursor::StartOfBlock);
+        cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        QString cutLine = cursor.selectedText();
+
+        // Collapse leading whitespaces to one or insert whitespace
+        cutLine.replace(QRegExp(QLatin1String("^\\s*")), QLatin1String(" "));
+        cursor.movePosition(QTextCursor::Right, QTextCursor::KeepAnchor);
+        cursor.removeSelectedText();
+
+        cursor.movePosition(QTextCursor::PreviousBlock);
+        cursor.movePosition(QTextCursor::EndOfBlock);
+
+        cursor.insertText(cutLine);
+    }
+    cursor.endEditBlock();
+
+    setTextCursor(cursor);
+}
+
+void LiteEditorWidgetBase::deleteStartOfWord()
+{
+    moveCursor(QTextCursor::StartOfWord, QTextCursor::KeepAnchor);
+    textCursor().removeSelectedText();
+    setTextCursor(textCursor());
+}
+
+void LiteEditorWidgetBase::moveLineUp()
+{
+    moveLineUpDown(true);
+}
+
+void LiteEditorWidgetBase::moveLineDown()
+{
+    moveLineUpDown(false);
+}
+
+void LiteEditorWidgetBase::copyLineUp()
+{
+    copyLineUpDown(true);
+}
+
+void LiteEditorWidgetBase::copyLineDown()
+{
+    copyLineUpDown(false);
+}
+
 void LiteEditorWidgetBase::insertLineBefore()
 {
     QTextCursor cur = this->textCursor();
@@ -1901,11 +2083,17 @@ void LiteEditorWidgetBase::keyPressEvent(QKeyEvent *e)
     if ((e->modifiers() & Qt::ControlModifier) && e->key() == Qt::Key_S) {
         return;
     }
-    if (e->key() == Qt::Key_Insert && e->modifiers() == Qt::NoModifier) {
-        this->setOverwriteMode(!this->overwriteMode());
-        emit overwriteModeChanged(this->overwriteMode());
+    if (e->key() == Qt::Key_Insert ) {
+        if (e->modifiers() == Qt::NoModifier) {
+            this->setOverwriteMode(!this->overwriteMode());
+            emit overwriteModeChanged(this->overwriteMode());
+        } else if (e->modifiers() == Qt::ControlModifier) {
+            this->copyLine();
+        }
         return;
     }
+    QToolTip::hideText();
+    this->m_moveLineUndoHack = false;
     bool ro = isReadOnly();
 
     if ( e->key() == Qt::Key_Enter || e->key() == Qt::Key_Return ) {
@@ -2552,17 +2740,17 @@ QTextBlock LiteEditorWidgetBase::foldedBlockAt(const QPoint &pos, QRect *box) co
 
 void LiteEditorWidgetBase::uplinkDeployTimeout()
 {
-    m_lastUplinkInfoPos = m_uplinkInfoPos;
-    m_uplinkInfoTimer->start(m_uplinkTime+100);
+    m_lastUpToolTipPos = m_upToolTipPos;
+    m_upToolTipTimer->start(m_upToolTipTime+100);
 }
 
 void LiteEditorWidgetBase::uplinkInfoTimeout()
 {
-    if (m_lastUplinkInfoPos != m_uplinkInfoPos) {
+    if (m_lastUpToolTipPos != m_upToolTipPos) {
         QToolTip::hideText();
         return;
     }
-    QTextCursor cursor = cursorForPosition(m_uplinkInfoPos);
+    QTextCursor cursor = cursorForPosition(m_upToolTipPos);
     bool findLink = false;
     if (!cursor.isNull()) {
         int pos = cursor.position();
@@ -2571,11 +2759,11 @@ void LiteEditorWidgetBase::uplinkInfoTimeout()
         if (cursor.hasSelection()) {
             rc.setLeft(rc.left()-(pos-cursor.selectionStart())*m_averageCharWidth);
             rc.setRight(rc.right()+(cursor.selectionEnd()-pos)*m_averageCharWidth);
-            if (rc.contains(m_uplinkInfoPos)) {
+            if (rc.contains(m_upToolTipPos)) {
                 findLink = true;
                 m_showLinkInfomation = true;
                 QToolTip::hideText();
-                emit updateLink(cursor,m_uplinkInfoPos,false);
+                emit updateLink(cursor,m_upToolTipPos,false);
             }
         }
     }
@@ -2588,8 +2776,8 @@ void LiteEditorWidgetBase::stopUplinkTimer()
 {
     m_showLinkInfomation = false;
     QToolTip::hideText();
-    m_uplinkInfoTimer->stop();
-    m_uplinkDeployTimer->stop();
+    m_upToolTipTimer->stop();
+    m_upToolTipDeployTimer->stop();
 }
 
 bool LiteEditorWidgetBase::isSpellCheckingAt(QTextCursor cur) const
@@ -2604,9 +2792,10 @@ bool LiteEditorWidgetBase::isSpellCheckingAt(QTextCursor cur) const
 
 void LiteEditorWidgetBase::showLink(const LiteApi::Link &link)
 {
-    if (!link.targetInfo.isEmpty() &&
-        ( (m_showLinkInfomation && link.cursorPos == m_lastUplinkInfoPos)
-          || m_showLinkNavigation )) {
+    if (link.showTip
+            && !link.targetInfo.isEmpty()
+            && m_showLinkInfomation
+            && link.cursorPos == m_lastUpToolTipPos) {
         QPoint pt = this->mapToGlobal(link.cursorPos);
         QToolTip::showText(pt,link.targetInfo,this);
     }
@@ -2620,7 +2809,7 @@ void LiteEditorWidgetBase::showLink(const LiteApi::Link &link)
     }
 
     if (link.targetFileName.isEmpty()) {
-        m_currentLink = LiteApi::Link();
+        clearLink();
         return;
     }
 
@@ -2640,7 +2829,6 @@ void LiteEditorWidgetBase::showLink(const LiteApi::Link &link)
 void LiteEditorWidgetBase::clearLink()
 {
     m_showLinkNavigation = false;
-    m_showLinkInfomation = false;
     m_linkPressed = false;
     if (!m_currentLink.hasValidLinkText())
         return;
@@ -2734,16 +2922,6 @@ void LiteEditorWidgetBase::testUpdateLink(QMouseEvent *e)
                 }
             }
         }
-    } else if (e->buttons() == Qt::NoButton){
-        if (m_uplinkSkip) {
-            m_uplinkSkip = false;
-            return;
-        }
-        m_uplinkInfoPos = e->pos();
-        m_uplinkDeployTimer->start(m_uplinkTime);
-    } else {
-        m_uplinkDeployTimer->stop();
-        m_uplinkInfoTimer->stop();
     }
     if (!findLink) {
         clearLink();
@@ -2764,6 +2942,12 @@ void LiteEditorWidgetBase::mousePressEvent(QMouseEvent *e)
             }
             m_uplinkSkip = true;
             this->stopUplinkTimer();
+        }
+    } else if (e->button() == Qt::RightButton) {
+        int eventCursorPosition = cursorForPosition(e->pos()).position();
+        if (eventCursorPosition < textCursor().selectionStart()
+                || eventCursorPosition > textCursor().selectionEnd()) {
+            setTextCursor(cursorForPosition(e->pos()));
         }
     }
     QPlainTextEdit::mousePressEvent(e);
@@ -2801,6 +2985,20 @@ void LiteEditorWidgetBase::mouseMoveEvent(QMouseEvent *e)
     }
     if (viewport()->cursor().shape() == Qt::BlankCursor)
         viewport()->setCursor(Qt::IBeamCursor);
+}
+
+bool LiteEditorWidgetBase::viewportEvent(QEvent *e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        if (QApplication::keyboardModifiers() & Qt::ControlModifier) {
+            return true;
+        }
+        const QHelpEvent *he = static_cast<QHelpEvent*>(e);
+        m_upToolTipPos = he->pos();
+        m_upToolTipDeployTimer->start(m_upToolTipTime);
+        return true;
+    }
+    return QPlainTextEdit::viewportEvent(e);
 }
 
 void LiteEditorWidgetBase::inputMethodEvent(QInputMethodEvent *e)
